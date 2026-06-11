@@ -1,8 +1,10 @@
+
 // Run this script to launch the server.
 // The server should run on localhost port 8000.
 // This is where you should start writing server-side code for this application.
 
 // For authetiation: 
+```javascript
 const session = require('express-session');
 const MongoStore = require('connect-mongo'); // for adding session Ids to our database to store user information and etc.
 const bcrypt = require('bcrypt');
@@ -384,4 +386,4 @@ app.listen(port, ()=> {
     console.log(`Server running on port ${port}`);
 });
 
-
+```
