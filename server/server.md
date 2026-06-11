@@ -4,7 +4,7 @@
 // This is where you should start writing server-side code for this application.
 
 // For authetiation: 
-```javascript
+
 const session = require('express-session');
 const MongoStore = require('connect-mongo'); // for adding session Ids to our database to store user information and etc.
 const bcrypt = require('bcrypt');
@@ -386,4 +386,445 @@ app.listen(port, ()=> {
     console.log(`Server running on port ${port}`);
 });
 
+
+```javascript
+// frontend/JwtAuthForm.jsx
+import { useState } from "react";
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: "http://localhost:8080/api",
+});
+
+export default function JwtAuthForm() {
+  const [formData, setFormData] = useState({
+    email: "",
+    password: "",
+  });
+
+  const [user, setUser] = useState(null);
+  const [message, setMessage] = useState("");
+
+  const register = async () => {
+    try {
+      const res = await api.post("/register", formData);
+
+      // Save JWT token in localStorage
+      localStorage.setItem("token", res.data.token);
+
+      setUser(res.data.user);
+      setMessage("Registered successfully");
+    } catch (err) {
+      setMessage(err.response?.data?.message || "Register failed");
+    }
+  };
+
+  const login = async () => {
+    try {
+      const res = await api.post("/login", formData);
+
+      // Store token after login
+      localStorage.setItem("token", res.data.token);
+
+      setUser(res.data.user);
+      setMessage("Logged in successfully");
+    } catch (err) {
+      setMessage(err.response?.data?.message || "Login failed");
+    }
+  };
+
+  const checkMe = async () => {
+    try {
+      const token = localStorage.getItem("token");
+
+      const res = await api.get("/me", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      setUser(res.data);
+      setMessage("User is authenticated");
+    } catch (err) {
+      setUser(null);
+      setMessage("Not authenticated");
+    }
+  };
+
+  const logout = () => {
+    // JWT logout usually means removing the token
+    localStorage.removeItem("token");
+
+    setUser(null);
+    setMessage("Logged out");
+  };
+
+  return (
+    <div>
+      <h2>JWT Auth</h2>
+
+      <input
+        placeholder="Email"
+        value={formData.email}
+        onChange={(e) =>
+          setFormData({ ...formData, email: e.target.value })
+        }
+      />
+
+      <input
+        placeholder="Password"
+        type="password"
+        value={formData.password}
+        onChange={(e) =>
+          setFormData({ ...formData, password: e.target.value })
+        }
+      />
+
+      <button onClick={register}>Register</button>
+      <button onClick={login}>Login</button>
+      <button onClick={checkMe}>Check Me</button>
+      <button onClick={logout}>Logout</button>
+
+      <p>{message}</p>
+
+      {user && <p>Logged in as: {user.email}</p>}
+    </div>
+  );
+}
+```
+
+```javascript
+// backend/jwt-auth.js
+import express from "express";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import cors from "cors";
+
+const app = express();
+
+app.use(express.json());
+
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    credentials: true,
+  })
+);
+
+const users = [];
+
+const JWT_SECRET = "my-jwt-secret";
+
+// Register route
+app.post("/api/register", async (req, res) => {
+  const { email, password } = req.body;
+
+  const existingUser = users.find((user) => user.email === email);
+
+  if (existingUser) {
+    return res.status(400).json({ message: "User already exists" });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  const newUser = {
+    id: Date.now(),
+    email,
+    password: hashedPassword,
+  };
+
+  users.push(newUser);
+
+  // Create JWT token
+  const token = jwt.sign(
+    { userId: newUser.id }, // payload stored inside token
+    JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+
+  res.json({
+    token,
+    user: {
+      id: newUser.id,
+      email: newUser.email,
+    },
+  });
+});
+
+// Login route
+app.post("/api/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  const user = users.find((user) => user.email === email);
+
+  if (!user) {
+    return res.status(400).json({ message: "Invalid credentials" });
+  }
+
+  const isPasswordCorrect = await bcrypt.compare(password, user.password);
+
+  if (!isPasswordCorrect) {
+    return res.status(400).json({ message: "Invalid credentials" });
+  }
+
+  // Create JWT after successful login
+  const token = jwt.sign(
+    { userId: user.id },
+    JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      email: user.email,
+    },
+  });
+});
+
+// Middleware to protect private routes
+function protectRoute(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  // Expected format: Authorization: Bearer token_here
+  if (!authHeader) {
+    return res.status(401).json({ message: "No token provided" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Save decoded user id on request object
+    req.userId = decoded.userId;
+
+    next();
+  } catch (err) {
+    return res.status(401).json({ message: "Invalid or expired token" });
+  }
+}
+
+// Current user route
+app.get("/api/me", protectRoute, (req, res) => {
+  const user = users.find((user) => user.id === req.userId);
+
+  if (!user) {
+    return res.status(404).json({ message: "User not found" });
+  }
+
+  res.json({
+    id: user.id,
+    email: user.email,
+  });
+});
+
+// JWT logout is usually handled on frontend
+app.post("/api/logout", (req, res) => {
+  // Server does not destroy anything unless using token blacklist
+  res.json({ message: "Logout by deleting token on frontend" });
+});
+
+app.listen(8080, () => {
+  console.log("JWT auth server running on port 8080");
+});
+```
+
+```javascript
+// backend/session-auth.js
+import express from "express";
+import session from "express-session";
+import bcrypt from "bcryptjs";
+import cors from "cors";
+
+const app = express();
+
+app.use(express.json());
+
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    credentials: true, // allows browser to send cookies
+  })
+);
+
+// In-memory fake database
+const users = [];
+
+// Session middleware
+app.use(
+  session({
+    secret: "my-session-secret", // used to sign the session ID cookie
+    resave: false, // do not save unchanged sessions
+    saveUninitialized: false, // do not create session until something is stored
+    cookie: {
+      httpOnly: true, // frontend JS cannot access cookie
+      secure: false, // true only in HTTPS production
+      maxAge: 1000 * 60 * 60, // 1 hour
+    },
+  })
+);
+
+// Register route
+app.post("/api/register", async (req, res) => {
+  const { email, password } = req.body;
+
+  const existingUser = users.find((user) => user.email === email);
+
+  if (existingUser) {
+    return res.status(400).json({ message: "User already exists" });
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  const newUser = {
+    id: Date.now(),
+    email,
+    password: hashedPassword,
+  };
+
+  users.push(newUser);
+
+  // Store user id in the session
+  req.session.userId = newUser.id;
+
+  res.json({ id: newUser.id, email: newUser.email });
+});
+
+// Login route
+app.post("/api/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  const user = users.find((user) => user.email === email);
+
+  if (!user) {
+    return res.status(400).json({ message: "Invalid credentials" });
+  }
+
+  const isPasswordCorrect = await bcrypt.compare(password, user.password);
+
+  if (!isPasswordCorrect) {
+    return res.status(400).json({ message: "Invalid credentials" });
+  }
+
+  // Save user id inside server-side session
+  req.session.userId = user.id;
+
+  res.json({ id: user.id, email: user.email });
+});
+
+// Check current logged-in user
+app.get("/api/me", (req, res) => {
+  if (!req.session.userId) {
+    return res.status(401).json({ message: "Not authenticated" });
+  }
+
+  const user = users.find((user) => user.id === req.session.userId);
+
+  res.json({ id: user.id, email: user.email });
+});
+
+// Logout route
+app.post("/api/logout", (req, res) => {
+  // Destroy session on server
+  req.session.destroy(() => {
+    res.clearCookie("connect.sid"); // remove session cookie
+    res.json({ message: "Logged out" });
+  });
+});
+
+app.listen(8080, () => {
+  console.log("Session auth server running on port 8080");
+});
+```
+
+```javascript
+// frontend/SessionAuthForm.jsx
+import { useState } from "react";
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: "http://localhost:8080/api",
+  withCredentials: true, // important: send cookies with requests
+});
+
+export default function SessionAuthForm() {
+  const [formData, setFormData] = useState({
+    email: "",
+    password: "",
+  });
+
+  const [user, setUser] = useState(null);
+  const [message, setMessage] = useState("");
+
+  const register = async () => {
+    try {
+      const res = await api.post("/register", formData);
+      setUser(res.data);
+      setMessage("Registered successfully");
+    } catch (err) {
+      setMessage(err.response?.data?.message || "Register failed");
+    }
+  };
+
+  const login = async () => {
+    try {
+      const res = await api.post("/login", formData);
+      setUser(res.data);
+      setMessage("Logged in successfully");
+    } catch (err) {
+      setMessage(err.response?.data?.message || "Login failed");
+    }
+  };
+
+  const checkMe = async () => {
+    try {
+      const res = await api.get("/me");
+      setUser(res.data);
+      setMessage("User is authenticated");
+    } catch (err) {
+      setUser(null);
+      setMessage("Not authenticated");
+    }
+  };
+
+  const logout = async () => {
+    await api.post("/logout");
+    setUser(null);
+    setMessage("Logged out");
+  };
+
+  return (
+    <div>
+      <h2>Session Auth</h2>
+
+      <input
+        placeholder="Email"
+        value={formData.email}
+        onChange={(e) =>
+          setFormData({ ...formData, email: e.target.value })
+        }
+      />
+
+      <input
+        placeholder="Password"
+        type="password"
+        value={formData.password}
+        onChange={(e) =>
+          setFormData({ ...formData, password: e.target.value })
+        }
+      />
+
+      <button onClick={register}>Register</button>
+      <button onClick={login}>Login</button>
+      <button onClick={checkMe}>Check Me</button>
+      <button onClick={logout}>Logout</button>
+
+      <p>{message}</p>
+
+      {user && <p>Logged in as: {user.email}</p>}
+    </div>
+  );
+}
 ```
